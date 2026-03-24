@@ -1,0 +1,19 @@
+---
+description: Conventions for Node-RED node runtime and editor files
+globs: nodes/businesscentral-*.{js,html}
+alwaysApply: false
+---
+
+# Node-RED Node Conventions
+
+- In `nodes/*.js`, keep runtime logic deterministic and avoid hidden global state.
+- Use `RED.nodes.registerType(...)` patterns consistent with current files.
+- Ensure defaults in `nodes/*.html` align with runtime expectations in `nodes/*.js`.
+- When adding config options, update labels, typed inputs, help text, and validation together.
+- Keep editor-side JavaScript simple and avoid business logic in the `.html` file.
+
+# Compatibility Checklist
+
+- New optional fields must have safe defaults for existing flows.
+- Renamed fields require a compatibility path or explicit migration guidance.
+- Maintain stable output contract for `msg.payload`, `msg.statusCode`, and `msg.error`.

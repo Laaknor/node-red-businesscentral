@@ -1,0 +1,24 @@
+---
+description: Core standards for Node-RED Business Central plugin work
+alwaysApply: true
+---
+
+# Core Standards
+
+- Keep changes minimal, focused, and backward compatible with existing node properties.
+- Preserve the split between runtime behavior in `nodes/*.js` and editor UI in `nodes/*.html`.
+- Do not log secrets, tokens, or full Authorization headers.
+- Validate user-provided config and fail with clear actionable errors.
+- Prefer small pure helper functions for request building, parsing, and normalization.
+- Keep naming consistent with existing node config fields and message outputs.
+
+# Error and Message Contract
+
+- On recoverable API failures, set `msg.statusCode` when available and include a concise `msg.error`.
+- Keep successful payloads in `msg.payload` and avoid breaking its shape without migration notes.
+- Include enough context in errors to debug endpoint/query issues without exposing credentials.
+
+# Testing and Verification
+
+- Run `npm test` after substantive JS changes.
+- Update docs when behavior or node configuration changes.

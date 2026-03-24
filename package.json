@@ -1,0 +1,42 @@
+{
+  "name": "node-red-businesscentral",
+  "version": "0.1.0",
+  "description": "Node-RED node for Microsoft Dynamics 365 Business Central REST APIs",
+  "main": "nodes/businesscentral-get.js",
+  "homepage": "https://github.com/Laaknor/node-red-businesscentral#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Laaknor/node-red-businesscentral.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Laaknor/node-red-businesscentral/issues"
+  },
+  "keywords": [
+    "node-red",
+    "node-red-node",
+    "business-central",
+    "dynamics-365",
+    "odata"
+  ],
+  "author": "",
+  "license": "MIT",
+  "files": [
+    "nodes/",
+    "lib/",
+    "docs/",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
+  "node-red": {
+    "nodes": {
+      "businesscentral-get": "nodes/businesscentral-get.js"
+    }
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

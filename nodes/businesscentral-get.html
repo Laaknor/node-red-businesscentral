@@ -1,0 +1,814 @@
+<script type="text/javascript">
+  (function () {
+    function toOptions(items) {
+      return (items || []).map(function (item) {
+        return '<option value="' + item.id + '">' + (item.name || item.id) + "</option>";
+      }).join("");
+    }
+
+    function toCompanyOptions(items) {
+      return (items || []).map(function (item) {
+        var label = item.name || item.id;
+        return '<option value="' + item.id + '" data-company-name="' + label + '">' + label + "</option>";
+      }).join("");
+    }
+
+    function buildEndpointOptions(items, searchTerm) {
+      var grouped = {};
+      var loweredSearch = (searchTerm || "").toLowerCase();
+      (items || []).forEach(function (item) {
+        var label = item.name || item.id;
+        var groupLabel = item.groupLabel || "other";
+        var haystack = (label + " " + groupLabel).toLowerCase();
+        if (loweredSearch && haystack.indexOf(loweredSearch) === -1) return;
+        if (!grouped[groupLabel]) grouped[groupLabel] = [];
+        grouped[groupLabel].push(item);
+      });
+      var html = "";
+      Object.keys(grouped).sort().forEach(function (groupLabel) {
+        html += '<optgroup label="' + groupLabel + '">';
+        grouped[groupLabel].forEach(function (item) {
+          var entitySet = item.entitySet || "";
+          var metadataPath = item.metadataPath || "";
+          html += '<option value="' + item.id + '" data-entity-set="' + entitySet + '" data-metadata-path="' + metadataPath + '">' + (item.name || item.id) + "</option>";
+        });
+        html += "</optgroup>";
+      });
+      return html;
+    }
+
+    function fetchJson(url) {
+      return $.ajax({
+        url: url,
+        method: "GET",
+        dataType: "json"
+      }).catch(function (jqXHR) {
+        var message = "Request failed";
+        if (jqXHR && jqXHR.responseJSON && jqXHR.responseJSON.error) {
+          message = jqXHR.responseJSON.error;
+        } else if (jqXHR && jqXHR.responseText) {
+          try {
+            var body = JSON.parse(jqXHR.responseText);
+            message = body.error || message;
+          } catch (e) {
+            message = jqXHR.responseText || message;
+          }
+        }
+        throw new Error(message);
+      });
+    }
+
+    function readCredentials() {
+      return {
+        configNodeId: $("#node-input-bcConfig").val(),
+        company: $("#node-input-company").val()
+      };
+    }
+
+    function ensureSelectValue(selector, value, label) {
+      if (!value) return;
+      var $select = $(selector);
+      if ($select.find('option[value="' + value.replace(/"/g, '\\"') + '"]').length === 0) {
+        $select.append('<option value="' + value + '">' + (label || value) + "</option>");
+      }
+      $select.val(value);
+    }
+
+    function parseDependencyMeta(raw) {
+      if (!raw) return {};
+      try {
+        return JSON.parse(raw);
+      } catch (e) {
+        return {};
+      }
+    }
+
+    function normalizeSelectedFields(raw) {
+      if (!raw) return [];
+      if (Array.isArray(raw)) return raw;
+      if (typeof raw === "string") {
+        return raw.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+      }
+      return [];
+    }
+
+    function renderSelectedFieldsSummary(raw) {
+      var values = normalizeSelectedFields(raw);
+      $("#bc-selected-fields-summary").text(values.length ? values.join(", ") : "None selected");
+    }
+
+    function encodeFilterValue(value, valueType) {
+      if (valueType === "number") return String(value);
+      if (valueType === "boolean") return String(value).toLowerCase() === "true" ? "true" : "false";
+      return "'" + String(value || "").replace(/'/g, "''") + "'";
+    }
+
+    function conditionToOData(condition) {
+      var op = condition.operator || "eq";
+      var field = condition.field || "";
+      var val = encodeFilterValue(condition.value, condition.valueType || "string");
+      if (!field) return "";
+      if (op === "contains" || op === "startswith" || op === "endswith") {
+        return op + "(" + field + "," + val + ")";
+      }
+      return field + " " + op + " " + val;
+    }
+
+    function groupToOData(group) {
+      var logic = (group.logic || "and").toLowerCase();
+      var parts = [];
+      (group.conditions || []).forEach(function (c) {
+        var expr = conditionToOData(c);
+        if (expr) parts.push(expr);
+      });
+      (group.groups || []).forEach(function (g) {
+        var sub = groupToOData(g);
+        if (sub) parts.push(sub);
+      });
+      if (!parts.length) return "";
+      if (parts.length === 1) return parts[0];
+      return "(" + parts.join(" " + logic + " ") + ")";
+    }
+
+    function filterGroupsToOData(filterGroups) {
+      if (!filterGroups || !Array.isArray(filterGroups.groups)) return "";
+      var logic = (filterGroups.logic || "and").toLowerCase();
+      var parts = filterGroups.groups.map(groupToOData).filter(Boolean);
+      if (!parts.length) return "";
+      if (parts.length === 1) return parts[0];
+      return parts.join(" " + logic + " ");
+    }
+
+    function parseFilterGroups(raw) {
+      if (!raw) return { logic: "and", groups: [{ logic: "and", conditions: [], groups: [] }] };
+      try {
+        var parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        if (!parsed || !Array.isArray(parsed.groups)) {
+          return { logic: "and", groups: [{ logic: "and", conditions: [], groups: [] }] };
+        }
+        return parsed;
+      } catch (e) {
+        return { logic: "and", groups: [{ logic: "and", conditions: [], groups: [] }] };
+      }
+    }
+
+    function operatorOptionsForType(fieldType) {
+      if (fieldType === "number") {
+        return ["eq", "ne", "gt", "ge", "lt", "le"];
+      }
+      if (fieldType === "boolean") {
+        return ["eq", "ne"];
+      }
+      return ["eq", "ne", "contains", "startswith", "endswith", "gt", "ge", "lt", "le"];
+    }
+
+    function getFieldType(fieldCache, fieldName) {
+      var match = (fieldCache || []).find(function (f) { return f.name === fieldName; });
+      return match && match.type ? match.type : "string";
+    }
+
+    function getGroupByPath(root, pathStr) {
+      var current = root;
+      if (!pathStr) return current;
+      var parts = pathStr.split("/").filter(Boolean).map(function (n) { return Number(n); });
+      for (var i = 0; i < parts.length; i++) {
+        current = current.groups[parts[i]];
+      }
+      return current;
+    }
+
+    function renderGroupHtml(group, path, fieldCache) {
+      var groupLogic = group.logic || "and";
+      var html = '<div class="bc-filter-group" data-path="' + path + '" style="border:1px solid #ddd;padding:8px;margin:8px 0;">';
+      html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">';
+      html += '<strong>Group</strong>';
+      html += '<label style="margin-left:8px;">Match</label>';
+      html += '<select class="bc-group-logic"><option value="and"' + (groupLogic === "and" ? " selected" : "") + '>ALL (AND)</option><option value="or"' + (groupLogic === "or" ? " selected" : "") + '>ANY (OR)</option></select>';
+      html += '<button class="red-ui-button bc-add-condition" type="button">+ Condition</button>';
+      html += '<button class="red-ui-button bc-add-subgroup" type="button">+ Subgroup</button>';
+      if (path) html += '<button class="red-ui-button bc-remove-group" type="button">Remove Group</button>';
+      html += '</div>';
+
+      (group.conditions || []).forEach(function (cond, idx) {
+        var fType = getFieldType(fieldCache, cond.field);
+        var ops = operatorOptionsForType(fType);
+        html += '<div class="bc-condition-row" data-cond-index="' + idx + '" style="display:flex;gap:6px;align-items:center;margin:4px 0;">';
+        if (fieldCache && fieldCache.length) {
+          html += '<select class="bc-cond-field"><option value="">Field...</option>';
+          (fieldCache || []).forEach(function (f) {
+            html += '<option value="' + f.name + '"' + (f.name === cond.field ? " selected" : "") + ">" + f.label + "</option>";
+          });
+          html += "</select>";
+        } else {
+          html += '<input class="bc-cond-field-text" type="text" value="' + (cond.field || "") + '" placeholder="Field name" />';
+        }
+        html += '<select class="bc-cond-operator">';
+        ops.forEach(function (op) {
+          html += '<option value="' + op + '"' + (op === cond.operator ? " selected" : "") + ">" + op + "</option>";
+        });
+        html += "</select>";
+        html += '<input class="bc-cond-value" type="text" value="' + (cond.value || "") + '" placeholder="Value" />';
+        html += '<button class="red-ui-button bc-remove-condition" type="button">Remove</button>';
+        html += "</div>";
+      });
+
+      (group.groups || []).forEach(function (sub, subIdx) {
+        var subPath = path ? path + "/" + subIdx : String(subIdx);
+        html += renderGroupHtml(sub, subPath, fieldCache);
+      });
+
+      html += "</div>";
+      return html;
+    }
+
+    function updateParentUi() {
+      var dependencyMeta = parseDependencyMeta($("#node-input-endpointDependencyMeta").val());
+      var requiresParent = !!dependencyMeta.requiresParent;
+      $(".bc-parent-row").toggle(requiresParent);
+      var mode = $("#node-input-parentMode").val();
+      $(".bc-parent-fixed-row").toggle(requiresParent && mode === "Single Parent" && $("#node-input-parentIdSource").val() === "fixed");
+      $(".bc-parent-msg-row").toggle(requiresParent && mode === "Single Parent" && $("#node-input-parentIdSource").val() === "msg");
+      $(".bc-parent-query-row").toggle(requiresParent && mode === "All Parents");
+      if (requiresParent) {
+        $("#bc-parent-notice").text("This endpoint requires parent context.");
+      } else {
+        $("#bc-parent-notice").text("");
+      }
+    }
+
+    RED.nodes.registerType("businesscentral-get", {
+      category: "function",
+      color: "#C0DEED",
+      defaults: {
+        name: { value: "" },
+        bcConfig: { value: "", type: "businesscentral-config", required: true },
+        company: { value: "", required: true },
+        companyName: { value: "" },
+        endpoint: { value: "", required: true },
+        endpointEntitySet: { value: "" },
+        endpointMetadataPath: { value: "" },
+        fetchMode: { value: "All", required: true },
+        selectedFields: { value: "" },
+        filterGroups: { value: "" },
+        endpointDependencyMeta: { value: "" },
+        parentMode: { value: "Single Parent" },
+        parentIdSource: { value: "msg" },
+        parentIdMsgField: { value: "salesOrderId" },
+        parentIdFixed: { value: "" },
+        parentQuery: { value: "" },
+        maxParents: { value: 500, validate: RED.validators.number() },
+        concurrencyLimit: { value: 5, validate: RED.validators.number() }
+      },
+      credentials: {},
+      inputs: 1,
+      outputs: 1,
+      icon: "font-awesome/fa-database",
+      label: function () {
+        return this.name || "businesscentral-get";
+      },
+      oneditprepare: function () {
+        var node = this;
+        var endpointCache = [];
+        var fieldCache = [];
+        renderSelectedFieldsSummary(node.selectedFields);
+        ensureSelectValue("#node-input-company", node.company, node.companyName || node.company);
+        ensureSelectValue("#node-input-endpoint", node.endpoint, node.endpoint);
+        if (node.endpointEntitySet) {
+          $("#node-input-endpoint option:selected").attr("data-entity-set", node.endpointEntitySet);
+        }
+        if (node.endpointMetadataPath) {
+          $("#node-input-endpoint option:selected").attr("data-metadata-path", node.endpointMetadataPath);
+        }
+        function loadCompanies() {
+          var c = readCredentials();
+          var url = "businesscentral/companies?configNodeId=" + encodeURIComponent(c.configNodeId);
+          return fetchJson(url).then(function (items) {
+            $("#node-input-company").html(toCompanyOptions(items));
+            if (node.company) $("#node-input-company").val(node.company);
+          });
+        }
+
+        function loadEndpoints() {
+          var c = readCredentials();
+          var url = "businesscentral/endpoints?configNodeId=" + encodeURIComponent(c.configNodeId)
+            + "&company=" + encodeURIComponent(c.company);
+          return fetchJson(url).then(function (items) {
+            endpointCache = items || [];
+            $("#node-input-endpoint").html(buildEndpointOptions(endpointCache, $("#node-input-endpoint-search").val()));
+            if (node.endpoint) $("#node-input-endpoint").val(node.endpoint);
+          });
+        }
+
+        function loadFields() {
+          var c = readCredentials();
+          var endpoint = $("#node-input-endpoint").val();
+          var selected = $("#node-input-endpoint option:selected");
+          var entitySet = selected.attr("data-entity-set") || endpoint;
+          var metadataPath = selected.attr("data-metadata-path") || "/$metadata";
+          var url = "businesscentral/endpoint-fields?configNodeId=" + encodeURIComponent(c.configNodeId)
+            + "&company=" + encodeURIComponent(c.company)
+            + "&endpoint=" + encodeURIComponent(endpoint)
+            + "&entitySet=" + encodeURIComponent(entitySet)
+            + "&metadataPath=" + encodeURIComponent(metadataPath);
+          return fetchJson(url).then(function (items) {
+            fieldCache = items || [];
+            var options = (items || []).map(function (item) {
+              return '<option value="' + item.name + '">' + item.label + "</option>";
+            }).join("");
+            $("#node-input-selectedFields").html(options);
+            var existing = normalizeSelectedFields(node.selectedFields);
+            $("#node-input-selectedFields").val(existing);
+            renderSelectedFieldsSummary(existing);
+          });
+        }
+
+        function loadDependencies() {
+          var c = readCredentials();
+          var selected = $("#node-input-endpoint option:selected");
+          var endpoint = selected.attr("data-entity-set") || $("#node-input-endpoint").val();
+          var url = "businesscentral/endpoint-dependencies?configNodeId=" + encodeURIComponent(c.configNodeId)
+            + "&company=" + encodeURIComponent(c.company)
+            + "&endpoint=" + encodeURIComponent(endpoint);
+          return fetchJson(url).then(function (meta) {
+            $("#node-input-endpointDependencyMeta").val(JSON.stringify(meta || {}));
+            updateParentUi();
+          });
+        }
+
+        $("#bc-load-companies").on("click", function (e) {
+          e.preventDefault();
+          loadCompanies().catch(function (err) { RED.notify(err.message, "error"); });
+        });
+        $("#bc-load-endpoints").on("click", function (e) {
+          e.preventDefault();
+          loadEndpoints().catch(function (err) { RED.notify(err.message, "error"); });
+        });
+        $("#bc-load-fields").on("click", function (e) {
+          e.preventDefault();
+          loadFields().catch(function (err) { RED.notify(err.message, "error"); });
+        });
+
+        $("#node-input-endpoint").on("change", function () {
+          loadDependencies().catch(function () { $("#node-input-endpointDependencyMeta").val("{}"); updateParentUi(); });
+        });
+        $("#node-input-endpoint-search").on("input", function () {
+          var selected = $("#node-input-endpoint").val();
+          $("#node-input-endpoint").html(buildEndpointOptions(endpointCache, $("#node-input-endpoint-search").val()));
+          if (selected) $("#node-input-endpoint").val(selected);
+        });
+        $("#node-input-parentMode,#node-input-parentIdSource").on("change", updateParentUi);
+        updateParentUi();
+      },
+      oneditsave: function () {
+        var selected = $("#node-input-selectedFields").val() || [];
+        $("#node-input-selectedFields").val(selected);
+        $("#node-input-selectedFields-hidden").val(selected.join(","));
+        var selectedCompanyName = $("#node-input-company option:selected").attr("data-company-name") || "";
+        $("#node-input-companyName").val(selectedCompanyName);
+        var selectedEndpoint = $("#node-input-endpoint option:selected");
+        $("#node-input-endpointEntitySet").val(selectedEndpoint.attr("data-entity-set") || "");
+        $("#node-input-endpointMetadataPath").val(selectedEndpoint.attr("data-metadata-path") || "");
+        // filterGroups hidden value is continuously synced by visual builder
+      }
+    });
+  })();
+</script>
+
+<script type="text/html" data-template-name="businesscentral-get">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-bcConfig">Node config</label>
+    <input type="text" id="node-input-bcConfig" />
+  </div>
+  <div class="form-row">
+    <button id="bc-load-companies" class="red-ui-button">Load companies</button>
+  </div>
+  <div class="form-row">
+    <label for="node-input-company">Company</label>
+    <select id="node-input-company"></select>
+    <input type="hidden" id="node-input-companyName" />
+  </div>
+  <div class="form-row">
+    <button id="bc-load-endpoints" class="red-ui-button">Load endpoints</button>
+  </div>
+  <div class="form-row">
+    <label for="node-input-endpoint-search">Endpoint search</label>
+    <input type="text" id="node-input-endpoint-search" placeholder="Search name or group (publisher/group/version)" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-endpoint">Endpoint</label>
+    <select id="node-input-endpoint"></select>
+    <input type="hidden" id="node-input-endpointEntitySet" />
+    <input type="hidden" id="node-input-endpointMetadataPath" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-fetchMode">Fetch mode</label>
+    <select id="node-input-fetchMode">
+      <option value="All">All</option>
+      <option value="Filtered">Filtered</option>
+    </select>
+  </div>
+  <div class="form-row">
+    <button id="bc-load-fields" class="red-ui-button">Load fields</button>
+  </div>
+  <div class="form-row">
+    <label for="node-input-selectedFields">Selected fields</label>
+    <select id="node-input-selectedFields" multiple style="height:120px"></select>
+    <div style="margin-top:6px;font-size:12px;color:#666;">Saved: <span id="bc-selected-fields-summary">None selected</span></div>
+    <input type="hidden" id="node-input-selectedFields-hidden" />
+  </div>
+  <input type="hidden" id="node-input-filterGroups" />
+
+  <div class="form-row bc-parent-row">
+    <label></label>
+    <span id="bc-parent-notice" style="color:#b94a48"></span>
+  </div>
+  <div class="form-row bc-parent-row">
+    <label for="node-input-parentMode">Parent mode</label>
+    <select id="node-input-parentMode">
+      <option value="Single Parent">Single Parent</option>
+      <option value="All Parents">All Parents</option>
+    </select>
+  </div>
+  <div class="form-row bc-parent-row">
+    <label for="node-input-parentIdSource">Parent id source</label>
+    <select id="node-input-parentIdSource">
+      <option value="msg">msg field</option>
+      <option value="fixed">fixed</option>
+    </select>
+  </div>
+  <div class="form-row bc-parent-row bc-parent-msg-row">
+    <label for="node-input-parentIdMsgField">msg field name</label>
+    <input type="text" id="node-input-parentIdMsgField" />
+  </div>
+  <div class="form-row bc-parent-row bc-parent-fixed-row">
+    <label for="node-input-parentIdFixed">Fixed parent id</label>
+    <input type="text" id="node-input-parentIdFixed" />
+  </div>
+  <div class="form-row bc-parent-row bc-parent-query-row">
+    <label for="node-input-parentQuery">Parent query JSON</label>
+    <input type="text" id="node-input-parentQuery" placeholder='{"$filter":"..."}' />
+  </div>
+  <div class="form-row">
+    <label for="node-input-maxParents">Max parents</label>
+    <input type="number" id="node-input-maxParents" />
+  </div>
+  <div class="form-row">
+    <label for="node-input-concurrencyLimit">Concurrency</label>
+    <input type="number" id="node-input-concurrencyLimit" />
+  </div>
+  <input type="hidden" id="node-input-endpointDependencyMeta" />
+</script>
+
+<script type="text/html" data-help-name="businesscentral-get">
+  <p>Fetch data from Microsoft Dynamics 365 Business Central with dynamic environment/company/endpoint discovery.</p>
+</script>
+
+<script type="text/javascript">
+  (function () {
+    function parseFilterGroups(raw) {
+      if (!raw) return { logic: "and", groups: [{ logic: "and", conditions: [], groups: [] }] };
+      try {
+        var parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        if (!parsed || !Array.isArray(parsed.groups)) {
+          return { logic: "and", groups: [{ logic: "and", conditions: [], groups: [] }] };
+        }
+        return parsed;
+      } catch (e) {
+        return { logic: "and", groups: [{ logic: "and", conditions: [], groups: [] }] };
+      }
+    }
+
+    function encodeFilterValue(value, valueType) {
+      if (valueType === "number") return String(value);
+      if (valueType === "boolean") return String(value).toLowerCase() === "true" ? "true" : "false";
+      return "'" + String(value || "").replace(/'/g, "''") + "'";
+    }
+
+    function conditionToOData(condition) {
+      var op = condition.operator || "eq";
+      var field = condition.field || "";
+      var val = encodeFilterValue(condition.value, condition.valueType || "string");
+      if (!field) return "";
+      if (op === "contains" || op === "startswith" || op === "endswith") {
+        return op + "(" + field + "," + val + ")";
+      }
+      return field + " " + op + " " + val;
+    }
+
+    function groupToOData(group) {
+      var logic = (group.logic || "and").toLowerCase();
+      var parts = [];
+      (group.conditions || []).forEach(function (c) {
+        var expr = conditionToOData(c);
+        if (expr) parts.push(expr);
+      });
+      (group.groups || []).forEach(function (g) {
+        var sub = groupToOData(g);
+        if (sub) parts.push(sub);
+      });
+      if (!parts.length) return "";
+      if (parts.length === 1) return parts[0];
+      return "(" + parts.join(" " + logic + " ") + ")";
+    }
+
+    function filterGroupsToOData(filterGroups) {
+      if (!filterGroups || !Array.isArray(filterGroups.groups)) return "";
+      var logic = (filterGroups.logic || "and").toLowerCase();
+      var parts = filterGroups.groups.map(groupToOData).filter(Boolean);
+      if (!parts.length) return "";
+      if (parts.length === 1) return parts[0];
+      return parts.join(" " + logic + " ");
+    }
+
+    function getGroupByPath(root, pathStr) {
+      var current = root;
+      if (!pathStr) return current;
+      var parts = pathStr.split("/").filter(Boolean).map(function (n) { return Number(n); });
+      for (var i = 0; i < parts.length; i++) {
+        current = current.groups[parts[i]];
+      }
+      return current;
+    }
+
+    function renderGroupHtml(group, path) {
+      var groupLogic = group.logic || "and";
+      var html = '<div class="bcf-group" data-path="' + path + '" style="border:1px solid #ddd;padding:8px;margin:8px 0;">';
+      html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">';
+      html += '<strong>Group</strong>';
+      html += '<label style="margin-left:8px;">Match</label>';
+      html += '<select class="bcf-group-logic"><option value="and"' + (groupLogic === "and" ? " selected" : "") + '>ALL (AND)</option><option value="or"' + (groupLogic === "or" ? " selected" : "") + '>ANY (OR)</option></select>';
+      html += '<button class="red-ui-button bcf-add-condition" type="button">+ Condition</button>';
+      html += '<button class="red-ui-button bcf-add-subgroup" type="button">+ Subgroup</button>';
+      if (path) html += '<button class="red-ui-button bcf-remove-group" type="button">Remove Group</button>';
+      html += '</div>';
+
+      (group.conditions || []).forEach(function (cond, idx) {
+        var op = cond.operator || "eq";
+        html += '<div class="bcf-condition-row" data-cond-index="' + idx + '" style="display:flex;gap:6px;align-items:center;margin:4px 0;">';
+        html += '<input class="bcf-cond-field" type="text" value="' + (cond.field || "") + '" placeholder="Field name" />';
+        html += '<select class="bcf-cond-operator">';
+        ["eq", "ne", "gt", "ge", "lt", "le", "contains", "startswith", "endswith"].forEach(function (candidate) {
+          html += '<option value="' + candidate + '"' + (candidate === op ? " selected" : "") + ">" + candidate + "</option>";
+        });
+        html += "</select>";
+        html += '<input class="bcf-cond-value" type="text" value="' + (cond.value || "") + '" placeholder="Value or {{msg.payload.foo}}" />';
+        html += '<select class="bcf-cond-valuetype"><option value="string"' + ((cond.valueType || "string") === "string" ? " selected" : "") + '>string</option><option value="number"' + (cond.valueType === "number" ? " selected" : "") + '>number</option><option value="boolean"' + (cond.valueType === "boolean" ? " selected" : "") + '>boolean</option></select>';
+        html += '<button class="red-ui-button bcf-remove-condition" type="button">Remove</button>';
+        html += "</div>";
+      });
+
+      (group.groups || []).forEach(function (sub, subIdx) {
+        var subPath = path ? path + "/" + subIdx : String(subIdx);
+        html += renderGroupHtml(sub, subPath);
+      });
+
+      html += "</div>";
+      return html;
+    }
+
+    RED.nodes.registerType("businesscentral-filter", {
+      category: "function",
+      color: "#E2D96E",
+      defaults: {
+        name: { value: "" },
+        filterGroups: { value: "" }
+      },
+      inputs: 1,
+      outputs: 1,
+      icon: "font-awesome/fa-filter",
+      label: function () {
+        return this.name || "businesscentral-filter";
+      },
+      oneditprepare: function () {
+        var node = this;
+        var model = parseFilterGroups(node.filterGroups);
+        function render() {
+          $("#bcf-builder").html(renderGroupHtml(model, ""));
+          $("#node-input-filterGroups").val(JSON.stringify(model));
+          $("#bcf-preview").text(filterGroupsToOData(model) || "(no filter)");
+        }
+
+        $("#bcf-builder").on("change", ".bcf-group-logic", function () {
+          var path = $(this).closest(".bcf-group").attr("data-path") || "";
+          getGroupByPath(model, path).logic = $(this).val();
+          render();
+        });
+        $("#bcf-builder").on("click", ".bcf-add-condition", function () {
+          var path = $(this).closest(".bcf-group").attr("data-path") || "";
+          var g = getGroupByPath(model, path);
+          g.conditions = g.conditions || [];
+          g.conditions.push({ field: "", operator: "eq", value: "", valueType: "string" });
+          render();
+        });
+        $("#bcf-builder").on("click", ".bcf-remove-condition", function () {
+          var path = $(this).closest(".bcf-group").attr("data-path") || "";
+          var idx = Number($(this).closest(".bcf-condition-row").attr("data-cond-index"));
+          getGroupByPath(model, path).conditions.splice(idx, 1);
+          render();
+        });
+        $("#bcf-builder").on("click", ".bcf-add-subgroup", function () {
+          var path = $(this).closest(".bcf-group").attr("data-path") || "";
+          var g = getGroupByPath(model, path);
+          g.groups = g.groups || [];
+          g.groups.push({ logic: "and", conditions: [], groups: [] });
+          render();
+        });
+        $("#bcf-builder").on("click", ".bcf-remove-group", function () {
+          var path = $(this).closest(".bcf-group").attr("data-path") || "";
+          if (!path) return;
+          var parts = path.split("/");
+          var idx = Number(parts.pop());
+          getGroupByPath(model, parts.join("/")).groups.splice(idx, 1);
+          render();
+        });
+        $("#bcf-builder").on("input change", ".bcf-cond-field,.bcf-cond-operator,.bcf-cond-value,.bcf-cond-valuetype", function () {
+          var row = $(this).closest(".bcf-condition-row");
+          var idx = Number(row.attr("data-cond-index"));
+          var path = $(this).closest(".bcf-group").attr("data-path") || "";
+          var cond = getGroupByPath(model, path).conditions[idx];
+          cond.field = row.find(".bcf-cond-field").val();
+          cond.operator = row.find(".bcf-cond-operator").val();
+          cond.value = row.find(".bcf-cond-value").val();
+          cond.valueType = row.find(".bcf-cond-valuetype").val();
+          $("#node-input-filterGroups").val(JSON.stringify(model));
+          $("#bcf-preview").text(filterGroupsToOData(model) || "(no filter)");
+        });
+        render();
+      }
+    });
+  })();
+</script>
+
+<script type="text/html" data-template-name="businesscentral-filter">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" />
+  </div>
+  <div class="form-row">
+    <label>Filter builder</label>
+    <div id="bcf-builder" style="width:70%;"></div>
+    <input type="hidden" id="node-input-filterGroups" />
+  </div>
+  <div class="form-row">
+    <label>Preview</label>
+    <code id="bcf-preview" style="display:block;max-width:70%;white-space:normal;">(no filter)</code>
+  </div>
+  <div class="form-row">
+    <label>Dynamic values</label>
+    <div style="max-width:70%;font-size:12px;color:#666;line-height:1.4;">
+      Use <code>{{msg.path.to.value}}</code> in Value fields to read data from incoming messages.<br/>
+      Examples: <code>{{msg.payload.customerNo}}</code>, <code>{{msg.topic}}</code>, <code>{{msg.payload.id}}</code>.
+    </div>
+  </div>
+</script>
+
+<script type="text/html" data-help-name="businesscentral-filter">
+  <p>Create <code>msg.filterGroups</code> visually and pass it to <code>businesscentral-get</code>.</p>
+  <p>Value fields support templates like <code>{{msg.payload.customerNo}}</code> to inject values from previous nodes.</p>
+</script>
+
+<script type="text/javascript">
+  RED.nodes.registerType("businesscentral-config", {
+    category: "config",
+    defaults: {
+      name: { value: "" },
+      tenantId: { value: "", required: true },
+      environment: { value: "", required: true },
+      customApiNamespaces: { value: "[]", required: false }
+    },
+    credentials: {
+      clientId: { type: "text", required: true },
+      clientSecret: { type: "password", required: true }
+    },
+    oneditprepare: function () {
+      var namespaces = [];
+      try {
+        var parsed = JSON.parse(this.customApiNamespaces || "[]");
+        namespaces = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
+      } catch (e) {
+        namespaces = [];
+      }
+
+      function renderNamespaces() {
+        var rows = namespaces.map(function (ns, index) {
+          return (
+            '<tr>' +
+              '<td>' + (ns.apiPublisher || "") + '</td>' +
+              '<td>' + (ns.apiGroup || "") + '</td>' +
+              '<td>' + (ns.apiVersion || "") + '</td>' +
+              '<td><a href="#" class="bc-remove-namespace" data-index="' + index + '">Remove</a></td>' +
+            '</tr>'
+          );
+        }).join("");
+        $("#bc-custom-api-list tbody").html(rows || '<tr><td colspan="4"><em>No custom APIs configured</em></td></tr>');
+        $("#node-config-input-customApiNamespaces").val(JSON.stringify(namespaces));
+      }
+
+      function openAddDialog() {
+        var dialogHtml =
+          '<div id="bc-custom-api-dialog">' +
+            '<div class="form-row"><label>API Publisher</label><input type="text" id="bc-dialog-publisher" /></div>' +
+            '<div class="form-row"><label>API Group</label><input type="text" id="bc-dialog-group" /></div>' +
+            '<div class="form-row"><label>API Version</label><input type="text" id="bc-dialog-version" placeholder="v1.0" /></div>' +
+          '</div>';
+        var $dialog = $(dialogHtml).appendTo("body");
+        $dialog.dialog({
+          modal: true,
+          title: "Add Custom API Namespace",
+          width: 480,
+          buttons: [
+            {
+              text: "Add",
+              click: function () {
+                var apiPublisher = $("#bc-dialog-publisher").val().trim();
+                var apiGroup = $("#bc-dialog-group").val().trim();
+                var apiVersion = $("#bc-dialog-version").val().trim();
+                if (!apiPublisher || !apiGroup || !apiVersion) {
+                  RED.notify("Publisher, Group and Version are required", "error");
+                  return;
+                }
+                namespaces.push({ apiPublisher: apiPublisher, apiGroup: apiGroup, apiVersion: apiVersion });
+                renderNamespaces();
+                $(this).dialog("close");
+              }
+            },
+            {
+              text: "Cancel",
+              click: function () {
+                $(this).dialog("close");
+              }
+            }
+          ],
+          close: function () {
+            $dialog.remove();
+          }
+        });
+      }
+
+      $("#bc-add-custom-api").on("click", function (e) {
+        e.preventDefault();
+        openAddDialog();
+      });
+      $("#bc-custom-api-list").on("click", ".bc-remove-namespace", function (e) {
+        e.preventDefault();
+        var index = Number($(this).attr("data-index"));
+        namespaces.splice(index, 1);
+        renderNamespaces();
+      });
+      renderNamespaces();
+    },
+    oneditsave: function () {
+      // hidden field already updated by UI logic
+    },
+    label: function () {
+      return this.name || this.tenantId || "businesscentral-config";
+    }
+  });
+</script>
+
+<script type="text/html" data-template-name="businesscentral-config">
+  <div class="form-row">
+    <label for="node-config-input-name">Name</label>
+    <input type="text" id="node-config-input-name" />
+  </div>
+  <div class="form-row">
+    <label for="node-config-input-tenantId">Tenant ID</label>
+    <input type="text" id="node-config-input-tenantId" />
+  </div>
+  <div class="form-row">
+    <label for="node-config-input-environment">Environment</label>
+    <input type="text" id="node-config-input-environment" placeholder="Production or Sandbox name" />
+  </div>
+  <div class="form-row">
+    <label for="node-config-input-clientId">Client ID</label>
+    <input type="text" id="node-config-input-clientId" />
+  </div>
+  <div class="form-row">
+    <label for="node-config-input-customApiNamespaces">Custom APIs</label>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <button id="bc-add-custom-api" class="red-ui-button">Add custom API</button>
+    </div>
+  </div>
+  <div class="form-row">
+    <table id="bc-custom-api-list" style="width:100%;border-collapse:collapse;">
+      <thead>
+        <tr>
+          <th style="text-align:left;">Publisher</th>
+          <th style="text-align:left;">Group</th>
+          <th style="text-align:left;">Version</th>
+          <th style="text-align:left;">Action</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <input type="hidden" id="node-config-input-customApiNamespaces" />
+  </div>
+  <div class="form-row">
+    <label for="node-config-input-clientSecret">Client Secret</label>
+    <input type="password" id="node-config-input-clientSecret" />
+  </div>
+</script>

@@ -1,0 +1,24 @@
+---
+description: Business Central API and OData request handling conventions
+globs: nodes/**/*.js
+alwaysApply: false
+---
+
+# Business Central API Conventions
+
+- Keep API version and path construction explicit and centralized.
+- Normalize base URL, company scope, and entity set handling before sending requests.
+- Encode and validate OData query options (`$filter`, `$select`, `$top`, `$orderby`) safely.
+- Prefer additive changes to request behavior; avoid silent breaking changes.
+
+# Auth and Security
+
+- Assume OAuth2 bearer tokens are sensitive; never expose raw tokens in logs/errors.
+- Fail fast on missing tenant/environment/company identifiers with clear error messages.
+- Distinguish auth failures (401/403) from query/resource errors (400/404).
+
+# Response Handling
+
+- Handle Business Central/OData pagination consistently when continuation links are present.
+- Preserve raw API response data in `msg.payload` unless a transform is explicitly configured.
+- Surface HTTP status and concise diagnostic context for troubleshooting.
