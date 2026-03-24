@@ -92,19 +92,6 @@ Run tests:
 npm test
 ```
 
-## Packaging checklist
-
-Before publishing:
-
-1. Update `package.json`:
-   - `name` (must be unique on npm)
-   - `version`
-   - `author`
-   - `repository`, `homepage`, `bugs`
-2. Verify with:
-   - `npm pack`
-3. Publish:
-   - `npm publish`
 
 ## License
 
