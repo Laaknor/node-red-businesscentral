@@ -18,8 +18,15 @@ test("businesscentral-get editor persists lookup names and refreshes on load", (
   assert.match(html, /id="node-input-fieldOptions"/);
   assert.match(html, /id="bc-selected-fields"/);
   assert.match(html, /id="node-input-selectedFields"/);
+  assert.match(html, /selectedExpands: \{ value: "" \}/);
+  assert.match(html, /expandOptions: \{ value: "\[\]" \}/);
+  assert.match(html, /id="bc-selected-expands"/);
+  assert.match(html, /id="node-input-selectedExpands"/);
+  assert.match(html, /id="node-input-expandOptions"/);
   assert.match(html, /function persistLookups\(/);
   assert.match(html, /companyCache = slimCompanies\(items\)/);
   assert.match(html, /endpointCache = slimEndpoints\(items\)/);
   assert.match(html, /fieldCache = slimFields\(items\)/);
+  assert.match(html, /expandCache = slimExpands\(expands\)/);
+  assert.match(html, /Rows marked \(expand\)/);
 });

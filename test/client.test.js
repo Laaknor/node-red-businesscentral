@@ -11,4 +11,8 @@ test("buildApiBaseUrl builds expected URL", () => {
 
 test("withQuery appends query parameters", () => {
   assert.equal(withQuery("/companies(1)/customers", { $select: "id,name" }), "/companies(1)/customers?%24select=id%2Cname");
+  assert.equal(
+    withQuery("/companies(1)/salesOrders", { $expand: "salesOrderLines,customer" }),
+    "/companies(1)/salesOrders?%24expand=salesOrderLines%2Ccustomer"
+  );
 });

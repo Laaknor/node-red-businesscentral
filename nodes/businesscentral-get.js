@@ -4,6 +4,13 @@ const { bcRequest, pagedGetAll } = require("../lib/businesscentral-client");
 const { validateNodeConfig } = require("../lib/validation");
 const { buildFilterString } = require("../lib/filter-builder");
 const { normalizeEndpointEntry, buildDependencyMap } = require("../lib/endpoints");
+const {
+  parseEntitySetsFromMetadata,
+  parseFieldsFromMetadata,
+  parseExpandPropertiesFromMetadata,
+  deriveMetadataContext
+} = require("../lib/metadata");
+const { applySelectAndExpand, normalizeCsvList, namesFromExpandOptions } = require("../lib/query-options");
 
 const DEFAULT_SCOPE = "https://api.businesscentral.dynamics.com/.default";
 const DEFAULT_MAX_PARENTS = 500;
@@ -82,15 +89,7 @@ function normalizeFilterGroups(input) {
 }
 
 function normalizeSelectedFields(input) {
-  if (!input) return [];
-  if (Array.isArray(input)) return input;
-  if (typeof input === "string") {
-    return input
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-  }
-  return [];
+  return normalizeCsvList(input);
 }
 
 function resolveParentId(nodeConfig, msg) {
@@ -115,69 +114,6 @@ function usesRootApiPrefix(path) {
 
 function needsCompanyQuery(path) {
   return usesRootApiPrefix(path) && path.indexOf("/companies(") === -1;
-}
-
-function parseEntitySetsFromMetadata(xmlText) {
-  const xml = String(xmlText || "");
-  const setMatches = [...xml.matchAll(/EntitySet Name="([^"]+)"/g)];
-  return setMatches.map((match) => match[1]);
-}
-
-function parseFieldsFromMetadata(xmlText, entitySetName) {
-  const xml = String(xmlText || "");
-  const escapedEntitySet = String(entitySetName || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-  // First resolve entity set -> entity type full name (e.g. Microsoft.NAV.customer)
-  const setRegex = new RegExp(`EntitySet\\s+Name="${escapedEntitySet}"\\s+EntityType="([^"]+)"`, "i");
-  const entityTypeFullName = xml.match(setRegex)?.[1];
-
-  // Then resolve type short name for matching <EntityType Name="...">
-  const typeCandidates = [];
-  if (entityTypeFullName) {
-    typeCandidates.push(entityTypeFullName.split(".").pop());
-  }
-  if (entitySetName) {
-    typeCandidates.push(entitySetName);
-  }
-
-  let entityBlock = "";
-  for (const candidate of typeCandidates) {
-    if (!candidate) continue;
-    const escapedCandidate = String(candidate).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const entityRegex = new RegExp(`<EntityType\\s+Name="${escapedCandidate}"([\\s\\S]*?)</EntityType>`, "i");
-    entityBlock = xml.match(entityRegex)?.[1] || "";
-    if (entityBlock) break;
-  }
-  if (!entityBlock) return [];
-
-  return [...entityBlock.matchAll(/Property\s+Name="([^"]+)"\s+Type="([^"]+)"/g)].map((m) => ({
-    name: m[1],
-    label: m[1],
-    type: m[2].includes("Int") || m[2].includes("Decimal") ? "number" : "string"
-  }));
-}
-
-function deriveMetadataContext(endpointValue, providedEntitySet, providedMetadataPath) {
-  if (providedEntitySet && providedMetadataPath) {
-    return { entitySet: providedEntitySet, metadataPath: providedMetadataPath };
-  }
-  const endpoint = String(endpointValue || "");
-  if (!endpoint) return { entitySet: "", metadataPath: "/$metadata" };
-  const entitySet = providedEntitySet || endpoint.split("/").filter(Boolean).pop() || endpoint;
-  if (providedMetadataPath) {
-    return { entitySet, metadataPath: providedMetadataPath };
-  }
-  if (endpoint.startsWith("/api/")) {
-    const parts = endpoint.split("/").filter(Boolean);
-    // /api/{publisher}/{group}/{version}/{entitySet}
-    if (parts.length >= 5) {
-      return {
-        entitySet,
-        metadataPath: `/${parts.slice(0, 4).join("/")}/$metadata`
-      };
-    }
-  }
-  return { entitySet, metadataPath: "/$metadata" };
 }
 
 function parseCustomApiNamespaces(rawValue) {
@@ -242,6 +178,43 @@ function getCredentials(RED, node, msg) {
   };
 }
 
+async function resolveExpandNames({ node, effective, credentials }) {
+  const fromConfig = namesFromExpandOptions(effective.expandOptions);
+  if (fromConfig.length) return fromConfig;
+
+  const ctx = deriveMetadataContext(
+    effective.endpoint,
+    effective.endpointEntitySet,
+    effective.endpointMetadataPath
+  );
+  const metadataPath = ctx.metadataPath || "/$metadata";
+  const entitySet = ctx.entitySet || effective.endpoint;
+  const cacheKey = [
+    effective.tenantId,
+    effective.environment,
+    metadataPath,
+    entitySet
+  ].join("|");
+  if (node._expandNameCache && node._expandNameCache.key === cacheKey) {
+    return node._expandNameCache.names;
+  }
+
+  const response = await bcRequest({
+    tenantId: effective.tenantId,
+    environment: effective.environment,
+    clientId: credentials.clientId,
+    clientSecret: credentials.clientSecret,
+    scope: effective.scope || DEFAULT_SCOPE,
+    apiPathPrefix: metadataPath.startsWith("/api/") ? "" : "/api/v2.0",
+    path: metadataPath
+  });
+  const names = parseExpandPropertiesFromMetadata(response.data.raw || response.data, entitySet)
+    .map((item) => item.name)
+    .filter(Boolean);
+  node._expandNameCache = { key: cacheKey, names };
+  return names;
+}
+
 module.exports = function (RED) {
   function BusinessCentralConfigNode(config) {
     RED.nodes.createNode(this, config);
@@ -279,11 +252,19 @@ module.exports = function (RED) {
         const credentials = getCredentials(RED, node, msg);
         validateNodeConfig(effective, credentials);
 
-        const query = { ...(msg.query || {}) };
         const selectedFields = normalizeSelectedFields(effective.selectedFields || msg.selectedFields);
-        if (selectedFields.length) {
-          query.$select = selectedFields.join(",");
+        const selectedExpands = normalizeSelectedFields(effective.selectedExpands || msg.selectedExpands);
+        let expandNames = namesFromExpandOptions(effective.expandOptions);
+        try {
+          expandNames = await resolveExpandNames({ node, effective, credentials });
+        } catch (expandError) {
+          node.warn(`Could not load $expand metadata: ${expandError.message}`);
         }
+        const query = applySelectAndExpand(
+          { ...(msg.query || {}) },
+          { selectedFields, selectedExpands, expandNames }
+        );
+        const appliedExpand = query.$expand || null;
 
         const fetchMode = effective.fetchMode || "All";
         const rawFilterGroups = hasRuntimeFilterGroups ? msg.filterGroups : effective.filterGroups;
@@ -337,7 +318,8 @@ module.exports = function (RED) {
             requestUrl: response.url,
             requestId: response.headers.get("x-ms-correlation-id") || response.headers.get("request-id") || null,
             requiresParent: false,
-            appliedFilter: appliedFilter || null
+            appliedFilter: appliedFilter || null,
+            appliedExpand
           };
           send(msg);
           done();
@@ -350,7 +332,9 @@ module.exports = function (RED) {
           requiresParent: true,
           parentEndpoint: dependencyMeta.parentEndpoint || null,
           parentsProcessed: 0,
-          failedParents: []
+          failedParents: [],
+          appliedFilter: appliedFilter || null,
+          appliedExpand
         };
 
         if (parentMode === "Single Parent") {
@@ -652,8 +636,10 @@ module.exports = function (RED) {
         path: metadataPath
       });
       const endpointName = ctx.entitySet || req.query.endpoint;
-      const fields = parseFieldsFromMetadata(response.data.raw || response.data, endpointName);
-      res.json(fields);
+      const metadataXml = response.data.raw || response.data;
+      const fields = parseFieldsFromMetadata(metadataXml, endpointName);
+      const expands = parseExpandPropertiesFromMetadata(metadataXml, endpointName);
+      res.json({ fields, expands });
     } catch (error) {
       res.status(error.statusCode || 500).json({ error: error.message });
     }
