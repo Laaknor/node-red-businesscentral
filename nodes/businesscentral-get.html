@@ -49,6 +49,18 @@
       }).filter(function (item) { return item.name; });
     }
 
+    function slimExpands(items) {
+      return (items || []).map(function (item) {
+        var name = item && (item.name || item);
+        return {
+          name: name,
+          label: (item && item.label) || name,
+          type: (item && item.type) || "",
+          isCollection: !!(item && item.isCollection)
+        };
+      }).filter(function (item) { return item.name; });
+    }
+
     function toCompanyOptions(items) {
       return (items || []).map(function (item) {
         var label = item.name || item.id;
@@ -163,6 +175,11 @@
     function renderSelectedFieldsSummary(raw) {
       var values = normalizeSelectedFields(raw);
       $("#bc-selected-fields-summary").text(values.length ? values.join(", ") : "None selected");
+    }
+
+    function renderSelectedExpandsSummary(raw) {
+      var values = normalizeSelectedFields(raw);
+      $("#bc-selected-expands-summary").text(values.length ? values.join(", ") : "None selected");
     }
 
     function encodeFilterValue(value, valueType) {
@@ -321,6 +338,8 @@
         fetchMode: { value: "All", required: true },
         selectedFields: { value: "" },
         fieldOptions: { value: "[]" },
+        selectedExpands: { value: "" },
+        expandOptions: { value: "[]" },
         filterGroups: { value: "" },
         endpointDependencyMeta: { value: "" },
         parentMode: { value: "Single Parent" },
@@ -343,7 +362,9 @@
         var companyCache = slimCompanies(parseJsonArray(node.companyOptions));
         var endpointCache = slimEndpoints(parseJsonArray(node.endpointOptions));
         var fieldCache = slimFields(parseJsonArray(node.fieldOptions));
+        var expandCache = slimExpands(parseJsonArray(node.expandOptions));
         var selectedFieldsValue = normalizeSelectedFields(node.selectedFields);
+        var selectedExpandsValue = normalizeSelectedFields(node.selectedExpands);
         if (node.company && !companyCache.some(function (item) { return item.id === node.company; })) {
           companyCache.push({ id: node.company, name: node.companyName || node.company });
         }
@@ -361,11 +382,17 @@
             return { name: name, label: name, type: "string" };
           });
         }
+        if (!expandCache.length && selectedExpandsValue.length) {
+          expandCache = selectedExpandsValue.map(function (name) {
+            return { name: name, label: name, type: "", isCollection: false };
+          });
+        }
 
         function persistLookups() {
           $("#node-input-companyOptions").val(JSON.stringify(companyCache));
           $("#node-input-endpointOptions").val(JSON.stringify(endpointCache));
           $("#node-input-fieldOptions").val(JSON.stringify(fieldCache));
+          $("#node-input-expandOptions").val(JSON.stringify(expandCache));
         }
 
         function currentCompany() {
@@ -380,6 +407,12 @@
           var fromSelect = $("#bc-selected-fields").val();
           if (fromSelect && fromSelect.length) return fromSelect;
           return selectedFieldsValue;
+        }
+
+        function currentSelectedExpands() {
+          var fromSelect = $("#bc-selected-expands").val();
+          if (fromSelect && fromSelect.length) return fromSelect;
+          return selectedExpandsValue;
         }
 
         function renderCompanies() {
@@ -408,6 +441,11 @@
         function renderFields() {
           var selected = currentSelectedFields();
           var items = fieldCache.slice();
+          expandCache.forEach(function (item) {
+            if (!items.some(function (existing) { return existing.name === item.name; })) {
+              items.push({ name: item.name, label: item.label || (item.name + " (expand)"), type: "expand" });
+            }
+          });
           selected.forEach(function (name) {
             if (!items.some(function (item) { return item.name === name; })) {
               items.push({ name: name, label: name, type: "string" });
@@ -420,9 +458,41 @@
           renderSelectedFieldsSummary(selected);
         }
 
+        function knownExpandNames() {
+          return expandCache.map(function (item) { return item.name; });
+        }
+
+        function mergeExpandSelection(extraNames) {
+          var merged = currentSelectedExpands().slice();
+          (extraNames || []).forEach(function (name) {
+            if (name && merged.indexOf(name) === -1) merged.push(name);
+          });
+          selectedExpandsValue = merged;
+          $("#bc-selected-expands").val(merged);
+          $("#node-input-selectedExpands").val(merged.join(","));
+          renderSelectedExpandsSummary(merged);
+          return merged;
+        }
+
+        function renderExpands() {
+          var selected = currentSelectedExpands();
+          var items = expandCache.slice();
+          selected.forEach(function (name) {
+            if (!items.some(function (item) { return item.name === name; })) {
+              items.push({ name: name, label: name, type: "", isCollection: false });
+            }
+          });
+          $("#bc-selected-expands").html(toFieldOptions(items));
+          $("#bc-selected-expands").val(selected);
+          selectedExpandsValue = selected;
+          $("#node-input-selectedExpands").val(selected.join(","));
+          renderSelectedExpandsSummary(selected);
+        }
+
         renderCompanies();
         renderEndpoints();
         renderFields();
+        renderExpands();
         persistLookups();
 
         function loadCompanies() {
@@ -461,10 +531,20 @@
             + "&endpoint=" + encodeURIComponent(endpoint)
             + "&entitySet=" + encodeURIComponent(entitySet)
             + "&metadataPath=" + encodeURIComponent(metadataPath);
-          return fetchJson(url).then(function (items) {
+          return fetchJson(url).then(function (payload) {
+            var items = Array.isArray(payload) ? payload : ((payload && payload.fields) || []);
+            var expands = Array.isArray(payload) ? [] : ((payload && payload.expands) || []);
             selectedFieldsValue = currentSelectedFields();
+            selectedExpandsValue = currentSelectedExpands();
             fieldCache = slimFields(items);
+            expandCache = slimExpands(expands);
+            var expandNameSet = {};
+            expandCache.forEach(function (item) { expandNameSet[item.name] = true; });
+            selectedFieldsValue.filter(function (name) { return expandNameSet[name]; }).forEach(function (name) {
+              if (selectedExpandsValue.indexOf(name) === -1) selectedExpandsValue.push(name);
+            });
             renderFields();
+            renderExpands();
             persistLookups();
           });
         }
@@ -506,6 +586,15 @@
           selectedFieldsValue = selected;
           $("#node-input-selectedFields").val(selected.join(","));
           renderSelectedFieldsSummary(selected);
+          var expandNameSet = {};
+          knownExpandNames().forEach(function (name) { expandNameSet[name] = true; });
+          mergeExpandSelection(selected.filter(function (name) { return expandNameSet[name]; }));
+        });
+        $("#bc-selected-expands").on("change", function () {
+          var selected = $("#bc-selected-expands").val() || [];
+          selectedExpandsValue = selected;
+          $("#node-input-selectedExpands").val(selected.join(","));
+          renderSelectedExpandsSummary(selected);
         });
         $("#node-input-parentMode,#node-input-parentIdSource").on("change", updateParentUi);
         updateParentUi();
@@ -513,6 +602,17 @@
       oneditsave: function () {
         var selected = $("#bc-selected-fields").val() || [];
         $("#node-input-selectedFields").val(selected.join(","));
+        var selectedExpands = $("#bc-selected-expands").val() || [];
+        var expandNameSet = {};
+        $("#bc-selected-expands option").each(function () {
+          expandNameSet[$(this).attr("value")] = true;
+        });
+        selected.forEach(function (name) {
+          if (expandNameSet[name] && selectedExpands.indexOf(name) === -1) {
+            selectedExpands.push(name);
+          }
+        });
+        $("#node-input-selectedExpands").val(selectedExpands.join(","));
         var selectedCompany = $("#node-input-company option:selected");
         $("#node-input-companyName").val(selectedCompany.attr("data-company-name") || selectedCompany.text() || "");
         var selectedEndpoint = $("#node-input-endpoint option:selected");
@@ -566,14 +666,21 @@
     </select>
   </div>
   <div class="form-row">
-    <button id="bc-load-fields" class="red-ui-button">Load fields</button>
+    <button id="bc-load-fields" class="red-ui-button">Load fields / $expand</button>
   </div>
   <div class="form-row">
     <label for="bc-selected-fields">Selected fields</label>
     <select id="bc-selected-fields" multiple style="height:120px"></select>
-    <div style="margin-top:6px;font-size:12px;color:#666;">Saved: <span id="bc-selected-fields-summary">None selected</span></div>
+    <div style="margin-top:6px;font-size:12px;color:#666;">Rows marked (expand) are related records sent as <code>$expand</code>. Saved: <span id="bc-selected-fields-summary">None selected</span></div>
     <input type="hidden" id="node-input-selectedFields" />
     <input type="hidden" id="node-input-fieldOptions" />
+  </div>
+  <div class="form-row">
+    <label for="bc-selected-expands">$expand</label>
+    <select id="bc-selected-expands" multiple style="height:120px"></select>
+    <div style="margin-top:6px;font-size:12px;color:#666;">Related records from API metadata. Hold Ctrl/Cmd to select multiple. Saved: <span id="bc-selected-expands-summary">None selected</span></div>
+    <input type="hidden" id="node-input-selectedExpands" />
+    <input type="hidden" id="node-input-expandOptions" />
   </div>
   <input type="hidden" id="node-input-filterGroups" />
 
@@ -620,7 +727,7 @@
 
 <script type="text/html" data-help-name="businesscentral-get">
   <p>Fetch data from Microsoft Dynamics 365 Business Central with dynamic environment/company/endpoint discovery.</p>
-  <p>Use <strong>Load companies</strong>, <strong>Load endpoints</strong>, and <strong>Load fields</strong> to fetch lookup lists. Names are stored on the node and restored when you reopen it. Click Load again to refresh the lists.</p>
+  <p>Use <strong>Load companies</strong>, <strong>Load endpoints</strong>, and <strong>Load fields / $expand</strong> to fetch lookup lists. The last button fills both <code>$select</code> fields and the <code>$expand</code> multi-select with related records from API metadata. Names are stored on the node and restored when you reopen it. Click Load again to refresh the lists.</p>
 </script>
 
 <script type="text/javascript">

@@ -105,6 +105,8 @@ Standard node properties:
 - `fetchMode` (required; dropdown: `All` or `Filtered`)
 - `selectedFields` (optional; multi-select of endpoint fields for `$select`)
 - `fieldOptions` (cached field lookup list for the editor)
+- `selectedExpands` (optional; multi-select of related records for `$expand`)
+- `expandOptions` (cached navigation-property lookup list for the editor)
 - `filterGroups` (optional stored fallback config; visual editing moved to `businesscentral-filter`)
 - `customEndpointPath` (optional; enabled when endpoint is `Custom`)
 
@@ -195,6 +197,26 @@ Rules:
 - Persist fetched field names/labels on the node (`fieldOptions`) so the multi-select restores when reopened.
 - Clicking `Load fields` again replaces the stored field list with the latest metadata.
 - For unsupported endpoints (or metadata lookup failure), allow fallback free-text list as optional future enhancement.
+
+### Related Record Multi-Select (`$expand`)
+
+Users can include related records (OData navigation properties) from the selected endpoint.
+
+Behavior:
+
+1. After endpoint selection, editor loads endpoint metadata.
+2. `selectedExpands` multi-select is populated from `NavigationProperty` entries in `$metadata`.
+3. If related records are selected, plugin sends `$expand=nav1,nav2,...`.
+4. If none are selected, the API returns the entity without expanded relations.
+
+Rules:
+
+- The expand list comes from API metadata for the selected endpoint, not a hardcoded list.
+- Multi-select supports Ctrl/Cmd for multiple related records.
+- Preserve already selected expands when metadata refreshes, if still valid.
+- Persist fetched expand names/labels on the node (`expandOptions`) so the multi-select restores when reopened.
+- Clicking `Load fields / $expand` again replaces the stored expand list with the latest metadata.
+- Collection-valued relations should be labeled distinctly (for example `salesOrderLines (collection)`).
 
 ### Fetch Mode and Visual Filter Builder (`$filter`)
 
@@ -304,6 +326,7 @@ URL builder should:
 - Encode company id safely
 - Handle optional query parameters from `msg.query`
 - Add `$select` from `selectedFields` when provided
+- Add `$expand` from `selectedExpands` when provided
 - Add `$filter` from visual filter builder when `fetchMode=Filtered`
 - Resolve dependent endpoint path templates using parent ids when `requiresParent=true`
 - Support paging links when present in API response
@@ -312,7 +335,7 @@ URL builder should:
 
 Input (`msg`):
 
-- Optional `msg.query` object for query parameters (`$filter`, `$select`, `$top`, etc.)
+- Optional `msg.query` object for query parameters (`$filter`, `$select`, `$expand`, `$top`, etc.)
 - Optional override fields (future extension), such as `msg.company`
 - Optional parent override fields for dependent endpoints, for example `msg.parentId` or `msg.salesOrderId`
 
@@ -365,7 +388,8 @@ Expose editor-only endpoints via `RED.httpAdmin`:
   - Extension discovery depends on `customApiNamespaces` in `businesscentral-config`
 - `GET /businesscentral/endpoint-fields`
   - Inputs: `configNodeId` + company/endpoint (+ `entitySet` and `metadataPath` for extension APIs)
-  - Returns field metadata, for example `[{ name, type, label }]`
+  - Returns `{ fields: [{ name, type, label }], expands: [{ name, label, type, isCollection }] }`
+  - `expands` is the list of `$expand` navigation properties for the selected entity
 - `GET /businesscentral/endpoint-dependencies`
   - Inputs: `configNodeId` + company
   - Returns endpoint dependency metadata used by editor and runtime
@@ -446,6 +470,7 @@ Unit tests:
 - URL builder correctness for all endpoint modes
 - Validation rules for config and custom path
 - OData `$select` generation from multi-select fields
+- OData `$expand` generation from related-record multi-select
 - OData `$filter` generation from visual filter builder rows
 
 Integration tests:
@@ -512,6 +537,24 @@ Generated query params:
 Resulting request path:
 
 - `/companies({companyId})/customers?$select=no,displayName,phoneNumber`
+
+### Example 2b: Fetch with Related Records (`$expand`)
+
+UI selection:
+
+- Endpoint: `salesOrders`
+- Fetch mode: `All`
+- Selected fields: `number`, `orderDate`
+- `$expand`: `salesOrderLines`, `customer`
+
+Generated query params:
+
+- `$select=number,orderDate`
+- `$expand=salesOrderLines,customer`
+
+Resulting request path:
+
+- `/companies({companyId})/salesOrders?$select=number,orderDate&$expand=salesOrderLines,customer`
 
 ### Example 3: Filtered Fetch with One Condition
 
@@ -683,6 +726,7 @@ Pending choices to confirm before implementation:
 - [ ] Add endpoint field metadata endpoint for multi-select and filters
 - [ ] Add `fetchMode` control (`All` / `Filtered`)
 - [ ] Add field multi-select and `$select` query generation
+- [ ] Add related-record multi-select and `$expand` query generation
 - [ ] Add visual filter builder and `$filter` query generation
 - [ ] Add validation and clear error messages
 - [ ] Add tests for auth, URL building, and editor behavior

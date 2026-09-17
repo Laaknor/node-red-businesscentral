@@ -8,7 +8,7 @@ alwaysApply: false
 
 - Keep API version and path construction explicit and centralized.
 - Normalize base URL, company scope, and entity set handling before sending requests.
-- Encode and validate OData query options (`$filter`, `$select`, `$top`, `$orderby`) safely.
+- Encode and validate OData query options (`$filter`, `$select`, `$expand`, `$top`, `$orderby`) safely.
 - Prefer additive changes to request behavior; avoid silent breaking changes.
 
 # Auth and Security

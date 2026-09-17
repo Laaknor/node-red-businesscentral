@@ -14,6 +14,7 @@ Node-RED nodes for reading data from Microsoft Dynamics 365 Business Central RES
   - Loaded company, endpoint, and field names are remembered in the editor and refreshed on Load
   - Built-in and extension endpoints
   - Optional field selection (`$select`)
+  - Optional related-record expand (`$expand`) from API metadata
   - Filter support (`$filter`) from config or `msg.filterGroups`
   - Dependency handling for parent/child endpoints (for example sales orders -> sales lines)
 - `businesscentral-filter` node to visually build `msg.filterGroups`
@@ -57,7 +58,7 @@ After publishing to npm, this package can be added from **Manage palette** in No
    - Config node
    - Company (click **Load companies**; names are remembered after you save)
    - Endpoint (click **Load endpoints**; names are remembered after you save)
-3. (Optional) Click **Load fields** to choose `$select` columns. The field list is remembered and refreshed when you Load again.
+3. (Optional) Click **Load fields / $expand** to choose `$select` columns and related records for `$expand`. Both lists are remembered and refreshed when you Load again.
 4. (Optional) Add `businesscentral-filter` before `businesscentral-get` to build advanced filters.
 5. Deploy and trigger with an Inject node.
 
@@ -69,6 +70,7 @@ Input overrides supported by `businesscentral-get`:
 - `msg.companyName`
 - `msg.endpoint`
 - `msg.selectedFields` (array or comma-separated string)
+- `msg.selectedExpands` (array or comma-separated string of related records for `$expand`)
 - `msg.filterGroups`
 - `msg.query` (additional query parameters)
 
@@ -76,7 +78,7 @@ Output:
 
 - `msg.payload` - API response rows/object
 - `msg.statusCode` - HTTP status
-- `msg.bc` - metadata (`requestUrl`, `requestId`, `appliedFilter`, endpoint/company context)
+- `msg.bc` - metadata (`requestUrl`, `requestId`, `appliedFilter`, `appliedExpand`, endpoint/company context)
 
 ## Permissions and authentication
 
