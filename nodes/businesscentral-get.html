@@ -1,15 +1,66 @@
 <script type="text/javascript">
   (function () {
-    function toOptions(items) {
+    function escapeHtml(value) {
+      return String(value == null ? "" : value)
+        .replace(/&/g, "&amp;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    function parseJsonArray(raw) {
+      if (Array.isArray(raw)) return raw;
+      if (!raw || typeof raw !== "string") return [];
+      try {
+        var parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (e) {
+        return [];
+      }
+    }
+
+    function slimCompanies(items) {
       return (items || []).map(function (item) {
-        return '<option value="' + item.id + '">' + (item.name || item.id) + "</option>";
-      }).join("");
+        return { id: item.id, name: item.name || item.id };
+      }).filter(function (item) { return item.id; });
+    }
+
+    function slimEndpoints(items) {
+      return (items || []).map(function (item) {
+        return {
+          id: item.id,
+          name: item.name || item.id,
+          groupLabel: item.groupLabel || "",
+          entitySet: item.entitySet || "",
+          metadataPath: item.metadataPath || "/$metadata"
+        };
+      }).filter(function (item) { return item.id; });
+    }
+
+    function slimFields(items) {
+      return (items || []).map(function (item) {
+        var name = item && (item.name || item);
+        return {
+          name: name,
+          label: (item && item.label) || name,
+          type: (item && item.type) || "string"
+        };
+      }).filter(function (item) { return item.name; });
     }
 
     function toCompanyOptions(items) {
       return (items || []).map(function (item) {
         var label = item.name || item.id;
-        return '<option value="' + item.id + '" data-company-name="' + label + '">' + label + "</option>";
+        return '<option value="' + escapeHtml(item.id) + '" data-company-name="' + escapeHtml(label) + '">' + escapeHtml(label) + "</option>";
+      }).join("");
+    }
+
+    function toFieldOptions(items) {
+      return (items || []).map(function (item) {
+        var name = item.name || item;
+        var label = item.label || name;
+        return '<option value="' + escapeHtml(name) + '">' + escapeHtml(label) + "</option>";
       }).join("");
     }
 
@@ -26,11 +77,11 @@
       });
       var html = "";
       Object.keys(grouped).sort().forEach(function (groupLabel) {
-        html += '<optgroup label="' + groupLabel + '">';
+        html += '<optgroup label="' + escapeHtml(groupLabel) + '">';
         grouped[groupLabel].forEach(function (item) {
           var entitySet = item.entitySet || "";
           var metadataPath = item.metadataPath || "";
-          html += '<option value="' + item.id + '" data-entity-set="' + entitySet + '" data-metadata-path="' + metadataPath + '">' + (item.name || item.id) + "</option>";
+          html += '<option value="' + escapeHtml(item.id) + '" data-entity-set="' + escapeHtml(entitySet) + '" data-metadata-path="' + escapeHtml(metadataPath) + '">' + escapeHtml(item.name || item.id) + "</option>";
         });
         html += "</optgroup>";
       });
@@ -65,11 +116,28 @@
       };
     }
 
-    function ensureSelectValue(selector, value, label) {
+    function ensureSelectValue(selector, value, label, dataAttrs) {
       if (!value) return;
       var $select = $(selector);
-      if ($select.find('option[value="' + value.replace(/"/g, '\\"') + '"]').length === 0) {
-        $select.append('<option value="' + value + '">' + (label || value) + "</option>");
+      var $opt = null;
+      $select.find("option").each(function () {
+        if ($(this).attr("value") === value) {
+          $opt = $(this);
+          return false;
+        }
+      });
+      if (!$opt) {
+        $opt = $("<option></option>").attr("value", value).text(label || value);
+        $select.append($opt);
+      } else if (label && $opt.text() === value && label !== value) {
+        $opt.text(label);
+      }
+      if (dataAttrs) {
+        Object.keys(dataAttrs).forEach(function (key) {
+          if (dataAttrs[key] != null && dataAttrs[key] !== "") {
+            $opt.attr(key, dataAttrs[key]);
+          }
+        });
       }
       $select.val(value);
     }
@@ -244,11 +312,15 @@
         bcConfig: { value: "", type: "businesscentral-config", required: true },
         company: { value: "", required: true },
         companyName: { value: "" },
+        companyOptions: { value: "[]" },
         endpoint: { value: "", required: true },
+        endpointName: { value: "" },
         endpointEntitySet: { value: "" },
         endpointMetadataPath: { value: "" },
+        endpointOptions: { value: "[]" },
         fetchMode: { value: "All", required: true },
         selectedFields: { value: "" },
+        fieldOptions: { value: "[]" },
         filterGroups: { value: "" },
         endpointDependencyMeta: { value: "" },
         parentMode: { value: "Single Parent" },
@@ -268,23 +340,100 @@
       },
       oneditprepare: function () {
         var node = this;
-        var endpointCache = [];
-        var fieldCache = [];
-        renderSelectedFieldsSummary(node.selectedFields);
-        ensureSelectValue("#node-input-company", node.company, node.companyName || node.company);
-        ensureSelectValue("#node-input-endpoint", node.endpoint, node.endpoint);
-        if (node.endpointEntitySet) {
-          $("#node-input-endpoint option:selected").attr("data-entity-set", node.endpointEntitySet);
+        var companyCache = slimCompanies(parseJsonArray(node.companyOptions));
+        var endpointCache = slimEndpoints(parseJsonArray(node.endpointOptions));
+        var fieldCache = slimFields(parseJsonArray(node.fieldOptions));
+        var selectedFieldsValue = normalizeSelectedFields(node.selectedFields);
+        if (node.company && !companyCache.some(function (item) { return item.id === node.company; })) {
+          companyCache.push({ id: node.company, name: node.companyName || node.company });
         }
-        if (node.endpointMetadataPath) {
-          $("#node-input-endpoint option:selected").attr("data-metadata-path", node.endpointMetadataPath);
+        if (node.endpoint && !endpointCache.some(function (item) { return item.id === node.endpoint; })) {
+          endpointCache.push({
+            id: node.endpoint,
+            name: node.endpointName || node.endpoint,
+            groupLabel: "",
+            entitySet: node.endpointEntitySet || "",
+            metadataPath: node.endpointMetadataPath || "/$metadata"
+          });
         }
+        if (!fieldCache.length && selectedFieldsValue.length) {
+          fieldCache = selectedFieldsValue.map(function (name) {
+            return { name: name, label: name, type: "string" };
+          });
+        }
+
+        function persistLookups() {
+          $("#node-input-companyOptions").val(JSON.stringify(companyCache));
+          $("#node-input-endpointOptions").val(JSON.stringify(endpointCache));
+          $("#node-input-fieldOptions").val(JSON.stringify(fieldCache));
+        }
+
+        function currentCompany() {
+          return $("#node-input-company").val() || node.company;
+        }
+
+        function currentEndpoint() {
+          return $("#node-input-endpoint").val() || node.endpoint;
+        }
+
+        function currentSelectedFields() {
+          var fromSelect = $("#bc-selected-fields").val();
+          if (fromSelect && fromSelect.length) return fromSelect;
+          return selectedFieldsValue;
+        }
+
+        function renderCompanies() {
+          var selected = currentCompany();
+          $("#node-input-company").html(toCompanyOptions(companyCache));
+          if (selected) {
+            var match = companyCache.find(function (item) { return item.id === selected; });
+            var label = (match && match.name) || node.companyName || selected;
+            ensureSelectValue("#node-input-company", selected, label, { "data-company-name": label });
+          }
+        }
+
+        function renderEndpoints() {
+          var selected = currentEndpoint();
+          $("#node-input-endpoint").html(buildEndpointOptions(endpointCache, $("#node-input-endpoint-search").val()));
+          if (selected) {
+            var match = endpointCache.find(function (item) { return item.id === selected; });
+            var label = (match && match.name) || node.endpointName || selected;
+            ensureSelectValue("#node-input-endpoint", selected, label, {
+              "data-entity-set": (match && match.entitySet) || node.endpointEntitySet || "",
+              "data-metadata-path": (match && match.metadataPath) || node.endpointMetadataPath || ""
+            });
+          }
+        }
+
+        function renderFields() {
+          var selected = currentSelectedFields();
+          var items = fieldCache.slice();
+          selected.forEach(function (name) {
+            if (!items.some(function (item) { return item.name === name; })) {
+              items.push({ name: name, label: name, type: "string" });
+            }
+          });
+          $("#bc-selected-fields").html(toFieldOptions(items));
+          $("#bc-selected-fields").val(selected);
+          selectedFieldsValue = selected;
+          $("#node-input-selectedFields").val(selected.join(","));
+          renderSelectedFieldsSummary(selected);
+        }
+
+        renderCompanies();
+        renderEndpoints();
+        renderFields();
+        persistLookups();
+
         function loadCompanies() {
           var c = readCredentials();
           var url = "businesscentral/companies?configNodeId=" + encodeURIComponent(c.configNodeId);
           return fetchJson(url).then(function (items) {
-            $("#node-input-company").html(toCompanyOptions(items));
-            if (node.company) $("#node-input-company").val(node.company);
+            var previous = currentCompany();
+            companyCache = slimCompanies(items);
+            renderCompanies();
+            if (previous) $("#node-input-company").val(previous);
+            persistLookups();
           });
         }
 
@@ -293,9 +442,11 @@
           var url = "businesscentral/endpoints?configNodeId=" + encodeURIComponent(c.configNodeId)
             + "&company=" + encodeURIComponent(c.company);
           return fetchJson(url).then(function (items) {
-            endpointCache = items || [];
-            $("#node-input-endpoint").html(buildEndpointOptions(endpointCache, $("#node-input-endpoint-search").val()));
-            if (node.endpoint) $("#node-input-endpoint").val(node.endpoint);
+            var previous = currentEndpoint();
+            endpointCache = slimEndpoints(items);
+            renderEndpoints();
+            if (previous) $("#node-input-endpoint").val(previous);
+            persistLookups();
           });
         }
 
@@ -311,14 +462,10 @@
             + "&entitySet=" + encodeURIComponent(entitySet)
             + "&metadataPath=" + encodeURIComponent(metadataPath);
           return fetchJson(url).then(function (items) {
-            fieldCache = items || [];
-            var options = (items || []).map(function (item) {
-              return '<option value="' + item.name + '">' + item.label + "</option>";
-            }).join("");
-            $("#node-input-selectedFields").html(options);
-            var existing = normalizeSelectedFields(node.selectedFields);
-            $("#node-input-selectedFields").val(existing);
-            renderSelectedFieldsSummary(existing);
+            selectedFieldsValue = currentSelectedFields();
+            fieldCache = slimFields(items);
+            renderFields();
+            persistLookups();
           });
         }
 
@@ -352,20 +499,24 @@
           loadDependencies().catch(function () { $("#node-input-endpointDependencyMeta").val("{}"); updateParentUi(); });
         });
         $("#node-input-endpoint-search").on("input", function () {
-          var selected = $("#node-input-endpoint").val();
-          $("#node-input-endpoint").html(buildEndpointOptions(endpointCache, $("#node-input-endpoint-search").val()));
-          if (selected) $("#node-input-endpoint").val(selected);
+          renderEndpoints();
+        });
+        $("#bc-selected-fields").on("change", function () {
+          var selected = $("#bc-selected-fields").val() || [];
+          selectedFieldsValue = selected;
+          $("#node-input-selectedFields").val(selected.join(","));
+          renderSelectedFieldsSummary(selected);
         });
         $("#node-input-parentMode,#node-input-parentIdSource").on("change", updateParentUi);
         updateParentUi();
       },
       oneditsave: function () {
-        var selected = $("#node-input-selectedFields").val() || [];
-        $("#node-input-selectedFields").val(selected);
-        $("#node-input-selectedFields-hidden").val(selected.join(","));
-        var selectedCompanyName = $("#node-input-company option:selected").attr("data-company-name") || "";
-        $("#node-input-companyName").val(selectedCompanyName);
+        var selected = $("#bc-selected-fields").val() || [];
+        $("#node-input-selectedFields").val(selected.join(","));
+        var selectedCompany = $("#node-input-company option:selected");
+        $("#node-input-companyName").val(selectedCompany.attr("data-company-name") || selectedCompany.text() || "");
         var selectedEndpoint = $("#node-input-endpoint option:selected");
+        $("#node-input-endpointName").val((selectedEndpoint.text() || "").trim());
         $("#node-input-endpointEntitySet").val(selectedEndpoint.attr("data-entity-set") || "");
         $("#node-input-endpointMetadataPath").val(selectedEndpoint.attr("data-metadata-path") || "");
         // filterGroups hidden value is continuously synced by visual builder
@@ -390,6 +541,7 @@
     <label for="node-input-company">Company</label>
     <select id="node-input-company"></select>
     <input type="hidden" id="node-input-companyName" />
+    <input type="hidden" id="node-input-companyOptions" />
   </div>
   <div class="form-row">
     <button id="bc-load-endpoints" class="red-ui-button">Load endpoints</button>
@@ -401,8 +553,10 @@
   <div class="form-row">
     <label for="node-input-endpoint">Endpoint</label>
     <select id="node-input-endpoint"></select>
+    <input type="hidden" id="node-input-endpointName" />
     <input type="hidden" id="node-input-endpointEntitySet" />
     <input type="hidden" id="node-input-endpointMetadataPath" />
+    <input type="hidden" id="node-input-endpointOptions" />
   </div>
   <div class="form-row">
     <label for="node-input-fetchMode">Fetch mode</label>
@@ -415,10 +569,11 @@
     <button id="bc-load-fields" class="red-ui-button">Load fields</button>
   </div>
   <div class="form-row">
-    <label for="node-input-selectedFields">Selected fields</label>
-    <select id="node-input-selectedFields" multiple style="height:120px"></select>
+    <label for="bc-selected-fields">Selected fields</label>
+    <select id="bc-selected-fields" multiple style="height:120px"></select>
     <div style="margin-top:6px;font-size:12px;color:#666;">Saved: <span id="bc-selected-fields-summary">None selected</span></div>
-    <input type="hidden" id="node-input-selectedFields-hidden" />
+    <input type="hidden" id="node-input-selectedFields" />
+    <input type="hidden" id="node-input-fieldOptions" />
   </div>
   <input type="hidden" id="node-input-filterGroups" />
 
@@ -465,6 +620,7 @@
 
 <script type="text/html" data-help-name="businesscentral-get">
   <p>Fetch data from Microsoft Dynamics 365 Business Central with dynamic environment/company/endpoint discovery.</p>
+  <p>Use <strong>Load companies</strong>, <strong>Load endpoints</strong>, and <strong>Load fields</strong> to fetch lookup lists. Names are stored on the node and restored when you reopen it. Click Load again to refresh the lists.</p>
 </script>
 
 <script type="text/javascript">

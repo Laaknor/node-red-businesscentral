@@ -11,6 +11,7 @@ Node-RED nodes for reading data from Microsoft Dynamics 365 Business Central RES
   - Custom API namespaces (`publisher/group/version`)
 - `businesscentral-get` node for data retrieval
   - Dynamic company and endpoint lookup
+  - Loaded company, endpoint, and field names are remembered in the editor and refreshed on Load
   - Built-in and extension endpoints
   - Optional field selection (`$select`)
   - Filter support (`$filter`) from config or `msg.filterGroups`
@@ -54,10 +55,11 @@ After publishing to npm, this package can be added from **Manage palette** in No
    - Client ID / Client Secret
 2. Add `businesscentral-get` and select:
    - Config node
-   - Company
-   - Endpoint
-3. (Optional) Add `businesscentral-filter` before `businesscentral-get` to build advanced filters.
-4. Deploy and trigger with an Inject node.
+   - Company (click **Load companies**; names are remembered after you save)
+   - Endpoint (click **Load endpoints**; names are remembered after you save)
+3. (Optional) Click **Load fields** to choose `$select` columns. The field list is remembered and refreshed when you Load again.
+4. (Optional) Add `businesscentral-filter` before `businesscentral-get` to build advanced filters.
+5. Deploy and trigger with an Inject node.
 
 ## Message contract
 

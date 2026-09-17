@@ -97,9 +97,14 @@ Standard node properties:
 - `name` (optional display name)
 - `bcConfig` (required; reference to `businesscentral-config`)
 - `company` (required; dropdown)
+- `companyName` (display name for the selected company)
+- `companyOptions` (cached company lookup list for the editor)
 - `endpoint` (required; dropdown)
+- `endpointName` (display name for the selected endpoint)
+- `endpointOptions` (cached endpoint lookup list for the editor)
 - `fetchMode` (required; dropdown: `All` or `Filtered`)
 - `selectedFields` (optional; multi-select of endpoint fields for `$select`)
+- `fieldOptions` (cached field lookup list for the editor)
 - `filterGroups` (optional stored fallback config; visual editing moved to `businesscentral-filter`)
 - `customEndpointPath` (optional; enabled when endpoint is `Custom`)
 
@@ -136,6 +141,8 @@ Rules:
 - Disable dropdown while loading.
 - Show loading indicator and error text on failure.
 - Preserve current selection if still available after refresh.
+- Persist fetched company `id` + `name` on the node (`companyOptions`) so the dropdown restores names when reopened.
+- Clicking `Load companies` again replaces the stored list with the latest fetch.
 
 ### Endpoint Dropdown
 
@@ -158,6 +165,8 @@ Rules:
 - Endpoint picker should support search across both endpoint name and group/namespace text.
 - Optional break-glass mode: `Custom` endpoint can be enabled only via explicit advanced setting.
 - Previously configured company/endpoint selections should remain visible in the editor before reloading dropdown data.
+- Persist fetched endpoint `id`, display name, group, entity set, and metadata path on the node (`endpointOptions`) so the dropdown restores names when reopened.
+- Clicking `Load endpoints` again replaces the stored list with the latest fetch.
 
 Endpoint loading flow:
 
@@ -183,6 +192,8 @@ Rules:
 
 - Multi-select supports search to handle large field lists.
 - Preserve already selected fields when metadata refreshes, if still valid.
+- Persist fetched field names/labels on the node (`fieldOptions`) so the multi-select restores when reopened.
+- Clicking `Load fields` again replaces the stored field list with the latest metadata.
 - For unsupported endpoints (or metadata lookup failure), allow fallback free-text list as optional future enhancement.
 
 ### Fetch Mode and Visual Filter Builder (`$filter`)
